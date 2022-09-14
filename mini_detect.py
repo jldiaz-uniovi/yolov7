@@ -1,14 +1,14 @@
 from pathlib import Path
 import random
 from collections import Counter
-import torch
+from dataclasses import dataclass
+
 import cv2
 import numpy as np
-from dataclasses import dataclass
-from models.experimental import attempt_load
-from utils.torch_utils import select_device, time_synchronized
-from utils.general import check_img_size, non_max_suppression, scale_coords
-from utils.datasets import letterbox
+import torch
+
+from mini_utils import select_device, attempt_load, check_img_size, letterbox, time_synchronized, non_max_suppression, scale_coords
+
 
 # For compatibility with yolov5 mini_detect
 @dataclass
@@ -117,7 +117,7 @@ def plot_one_box(x, img, color=None, label=None, line_thickness=None):
         cv2.rectangle(img, c1, c2, color, -1, cv2.LINE_AA)  # filled
         cv2.putText(img, label, (c1[0], c1[1] - 2), 0, tl / 3, [225, 255, 255], thickness=tf, lineType=cv2.LINE_AA)
 
-def label_image(p, results, save_dir=None):
+def label_image(p, results):
     """Takes the results of the detection and draws several bounding boxes 
     with labels on the image.
 
@@ -131,10 +131,7 @@ def label_image(p, results, save_dir=None):
 
     colors = [[random.randint(0, 255) for _ in range(3)] for _ in results.names]
 
-    if save_dir:
-        im0 = cv2.imread(str(p))
-    else:
-        im0 = p
+    im0 = p
     # im0 = results.imgs[0]
     for *xyxy, conf, clase in reversed(results.xyxy[0]):
         label = f"{results.names[int(clase)]} {conf:.2f}"
@@ -147,15 +144,11 @@ def label_image(p, results, save_dir=None):
         )
 
     # Save results (image with detections)
-    if save_dir:
-        p = Path(p)
-        save_dir = Path(save_dir)
-        save_path = str(save_dir / p.name) 
-        cv2.imwrite(save_path, im0)
+    ok, buffer = cv2.imencode(".jpg", im0)
+    if ok:
+        return buffer
     else:
-        ok, buffer = cv2.imencode(".jpg", im0)
-        if ok:
-            return buffer
+        return bytearray([])
 
 if __name__ == "__main__":
     import sys
