@@ -1,28 +1,23 @@
-import os
-import sys
 import io
 import time
 
-from flask import Flask, request, redirect, url_for, flash, render_template_string
-from flask import send_from_directory, send_file
+from flask import Flask, request, redirect, render_template_string
+from flask import send_file
 from flask.json import jsonify
 import cv2
 import numpy as np
-from werkzeug.utils import secure_filename
 from mini_detect import label_image, load_model, detect, get_meta
+
 # from prometheus_flask_exporter import PrometheusMetrics
 import torch
 
 
 # Some constants
-UPLOAD_FOLDER = './server/uploads'
-DETECTIONS_FOLDER = './server/detections'
-ALLOWED_EXTENSIONS = {'jpg', 'jpeg', 'png'}
-# PRELOADED_MODELS = ["s", "x"]
-PRELOADED_MODELS = ['yolov7', 'yolov7x']
+ALLOWED_EXTENSIONS = {"jpg", "jpeg", "png"}
+PRELOADED_MODELS = {"s": "yolov7", }# "x": "yolov7x"}
 
 # This should be an external file
-FORM_TEMPLATE = '''
+FORM_TEMPLATE = """
 <!doctype html>
 <head>
 <title>YOLOv7 - Subir imagen</title>
@@ -52,8 +47,8 @@ ul.flashes {
 
   <label for="model">Elige modelo:</label>
   <select name="model" id="model">
-    <option value="yolov7">Yolov7</option>
-    <option value="yolov7x">Yolov7x</option>
+    <option value="s">Yolov7</option>
+    <option value="x">Yolov7x</option>
   </select>
 
   <label for="threads">Num Threads:</label>
@@ -70,9 +65,10 @@ ul.flashes {
 
 </form>
 </body>
-'''
+"""
 
 auto_numthreads = None
+
 
 def autoset_threads():
     global auto_numthreads
@@ -83,7 +79,7 @@ def autoset_threads():
             period = int(f.read())
         if quota == -1:
             return
-        auto_numthreads = max(1, quota//period)
+        auto_numthreads = max(1, quota // period)
     torch.set_num_threads(auto_numthreads)
     # print(f"Setting num_threads to {num_threads}", file=sys.stderr)
 
@@ -94,114 +90,50 @@ app = Flask(__name__)
 # metrics = PrometheusMetrics(app)
 # metrics.info("yolo_info", "YoloV5 application info", version="1.7s")
 
-app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
-app.config['DETECTIONS_FOLDER'] = DETECTIONS_FOLDER
-app.config['SECRET_KEY'] = "replace-me"
+app.config["SECRET_KEY"] = "replace-me"
 
 model = {}
 # Prepare Yolo models
-for m in PRELOADED_MODELS:
+for l, m in PRELOADED_MODELS.items():
     print(f"Loading model {m}")
-    model[m] = load_model(f"{m}")
+    model[l] = load_model(m)
 
 # Utility functions
 def allowed_file(filename):
     """Checks if the extension of the file sent by the client is valid"""
-    return '.' in filename and \
-           filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+    return "." in filename and filename.rsplit(".", 1)[1].lower() in ALLOWED_EXTENSIONS
 
 
-def get_file(request):
-    """Extracts the file from the client requests and saves it
-    in the UPLOAD_FOLDER.
-
-    Returns the filename in the filesystem if all went ok,
-    or an empty string otherwise
-    """
-
-    if 'file' not in request.files or not request.files["file"]:
-        return ""
-    file = request.files['file']
-    if not file or not allowed_file(file.filename):
-        return ""
-    filename = secure_filename(file.filename)
-    file.save(os.path.join(app.config['UPLOAD_FOLDER'], filename))
-    return filename
-
-
-def detect_and_label_image(file, m, augment):
+def detect_and_label_image(img, m, augment):
     """Calls Yolo detector on the input image and produces
     a labelled image in the output folder"""
 
-    if type(file) == str:
-        _in = os.path.join(app.config['UPLOAD_FOLDER'], file)
-        _out = app.config['DETECTIONS_FOLDER']
-    else:
-        _in = cv2.imdecode(np.asarray(bytearray(file.read()), dtype=np.uint8),1)
-        _out = None
+    _in = cv2.imdecode(np.asarray(bytearray(img.read()), dtype=np.uint8), 1)
     r = detect(_in, model[m], augment=augment)
-    img = label_image(_in, r, _out)
+    img = label_image(_in, r)
     return img
 
 
-
-def detect_and_get_meta(file, m, augment):
+def detect_and_get_meta(img, m, augment):
     """Calls Yolo detector on the input image and returns
     a Python dictionary with the results"""
 
-    if type(file) == str:
-        _in = os.path.join(app.config['UPLOAD_FOLDER'], file)
-    else:
-        _in = cv2.imdecode(np.asarray(bytearray(file.read()), dtype=np.uint8),1)
+    _in = cv2.imdecode(np.asarray(bytearray(img.read()), dtype=np.uint8), 1)
     r = detect(_in, model[m], augment=augment)
     return get_meta(r)
 
 
 # FLASK routes
-@app.route('/detect2', methods=['GET', 'POST'])
-def upload_file():
-    """Main route. When GET is used it shows the form which allows
-    to upload a file. When POST is used, it receives the file, calls
-    Yolo detector and returns the result, which can be an annotated
-    image or a JSON
-    """
+@app.route("/")
+def index():
+    return redirect("/detect")
 
-    t1 = time.time()
-    if request.method == "GET":
-        return render_template_string(FORM_TEMPLATE)
-
-    # Dealing with POST request:
-    filename = get_file(request)
-    if not filename:
-        flash("Tipo de fichero no válido (solo jpg o png)")
-        return redirect(request.url)
-
-    m = request.form.get("model", "yolov7")
-    augment = request.form.get("augment", "false")
-    if augment.lower() in ("false", "0", "no"):
-       augment = False
-    augment = bool(augment)
-    
-    # Return labeled image
-    if request.form["tipo"] == "imagen":
-        detect_and_label_image(filename, m, augment)
-        # Redirect to the url which allows the client to
-        # download the annotated image
-        return redirect(url_for('uploaded_file', augment))
-    # Return json
-    else:
-        metadata = detect_and_get_meta(filename, m, augment)
-        t2 = time.time()
-        metadata["meta"]["totaltime"] = t2-t1
-        metadata["meta"]["model"] = m            
-        return jsonify(metadata)
-
-@app.route('/detect', methods=['GET', 'POST', 'HEAD'])
+@app.route("/detect", methods=["GET", "POST", "HEAD"])
 # @metrics.do_not_track()
 # @metrics.summary('requests_by_status', 'Request latencies by status',
 #                 labels={'status': lambda r: r.status_code})
 # @metrics.summary('requests_by_type', 'Request latencias by type',
-#		labels={'type': lambda: request.method=="GET" or request.form["tipo"] })
+# 		labels={'type': lambda: request.method=="GET" or request.form["tipo"] })
 # @metrics.gauge('in_progress', 'Long running requests in progress')
 # @metrics.histogram('requests_by_status_and_type', 'Request latencies by status and type',
 #                   labels={'status': lambda r: r.status_code, 'type': lambda: request.form["tipo"]})
@@ -220,7 +152,7 @@ def direct_detect():
         return render_template_string(FORM_TEMPLATE)
 
     # Dealing with POST request:
-    print("Recibido", request.method, dict(request.form), dict(request.files))
+    print("Received parameters: ", request.method, dict(request.form), dict(request.files))
     file = request.files.get("file")
 
     m = request.form.get("model", "yolov7")
@@ -228,7 +160,7 @@ def direct_detect():
         return f"You cannot use model {m!r}, only {PRELOADED_MODELS}", 404
     augment = request.form.get("augment", "false")
     if augment.lower() in ("false", "0", "no"):
-       augment = False
+        augment = False
     augment = bool(augment)
 
     threads = request.form.get("threads", "auto")
@@ -246,22 +178,13 @@ def direct_detect():
         return send_file(
             io.BytesIO(img),
             # attachment_filename="detection.jpg",
-            mimetype="image/jpg"
+            mimetype="image/jpg",
         )
     else:
         metadata = detect_and_get_meta(file.stream, m, augment)
         t2 = time.time()
-        metadata["meta"]["totaltime"] = t2-t1
+        metadata["meta"]["totaltime"] = t2 - t1
         metadata["meta"]["model"] = m
         metadata["meta"]["threads"] = torch.get_num_threads()
         metadata["meta"]["inter_op"] = torch.get_num_interop_threads()
         return jsonify(metadata)
-
-# Route to "return" the annotated image
-@app.route('/detections/<filename>')
-# @metrics.do_not_track()
-# @metrics.summary('downloads_by_status', 'Download latencies by status',
-#                 labels={'status': lambda r: r.status_code})
-def uploaded_file(filename):
-    return send_from_directory(app.config['DETECTIONS_FOLDER'],
-                               filename)

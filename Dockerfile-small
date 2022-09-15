@@ -1,0 +1,25 @@
+FROM python:3.10
+
+# Install linux packages
+RUN apt update && apt install -y libgl1-mesa-glx
+
+# Install python dependencies
+RUN python -m pip install --upgrade pip
+COPY requirements.txt .
+RUN pip install -r requirements.txt flask gunicorn
+
+# RUN pip install prometheus-flask-exporter
+
+# Create working directory
+RUN mkdir -p /app
+WORKDIR /app
+
+# Copy pretrained model
+COPY yolov7.pt /app
+COPY models /app/models
+COPY utils /app/utils
+
+# Copy server code
+COPY server.py mini_detect.py /app/
+ENV GUNICORN_FLAGS="--workers 1"
+CMD gunicorn --timeout 0 $GUNICORN_FLAGS -b 0.0.0.0:5000 server:app

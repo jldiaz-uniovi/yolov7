@@ -7,48 +7,62 @@ import cv2
 import numpy as np
 import torch
 
-from mini_utils import select_device, attempt_load, check_img_size, letterbox, time_synchronized, non_max_suppression, scale_coords
+from utils.torch_utils import select_device, time_synchronized
+from utils.general import check_img_size, non_max_suppression, scale_coords
+from models.common import letterbox
+from models.experimental import attempt_load
 
 
 # For compatibility with yolov5 mini_detect
 @dataclass
 class DetectResults:
-    time:float
-    detect_time:float
-    augment:bool
-    imgs:list
-    files:list
-    xyxy:list
-    names:list[str]
+    time: float
+    detect_time: float
+    augment: bool
+    imgs: list
+    files: list
+    xyxy: list
+    names: list[str]
+
+_device = select_device("")
 
 def load_model(model_name="yolov7", device=""):
     """Load the model
     model_name: one of "yolov7", "yolov7x"
     """
-    device = select_device(device)
+    global _device
+    if device:
+        _device = select_device(device)
     model_name += ".pt"
-    model = attempt_load(model_name, map_location=device)
-    half = device.type != 'cpu'  # half precision only supported on CUDA
+    model = attempt_load(model_name, map_location=_device)
+    half = _device.type != "cpu"  # half precision only supported on CUDA
     if half:
         model.half()  # to FP16
     return model
 
-def detect(image, model, device="", augment=False, agnostic_nms=False,
-           conf_thres = 0.25, iou_thres = 0.45, classes = None):
+
+def detect(
+    image,
+    model,
+    augment=False,
+    agnostic_nms=False,
+    conf_thres=0.25,
+    iou_thres=0.45,
+    classes=None,
+):
     """Applies the model on the image and returns the object with the results"""
     # Reescalar imagen
     img0 = image
-    device = select_device(device)
-    half = device.type != 'cpu'  # half precision only supported on CUDA
+    half = _device.type != "cpu"  # half precision only supported on CUDA
 
     stride = int(model.stride.max())
     imgsz = check_img_size(640, s=stride)
     img = letterbox(img0, imgsz, stride=stride)[0]
     img = img[:, :, ::-1].transpose(2, 0, 1)  # BGR to RGB, to 3x416x416
-    img = np.ascontiguousarray(img)    
+    img = np.ascontiguousarray(img)
     # Detección
 
-    img = torch.from_numpy(img).to(device)
+    img = torch.from_numpy(img).to(_device)
     img = img.half() if half else img.float()  # uint8 to fp16/32
     img /= 255.0  # 0 - 255 to 0.0 - 1.0
     if img.ndimension() == 3:
@@ -58,18 +72,28 @@ def detect(image, model, device="", augment=False, agnostic_nms=False,
     pred = model(img, augment=augment)[0]
     t2 = time_synchronized()
     # Extraer las etiquetas más probables para los objetos detectados
-    pred = non_max_suppression(pred, conf_thres, iou_thres, classes=classes, agnostic=agnostic_nms)
+    pred = non_max_suppression(
+        pred, conf_thres, iou_thres, classes=classes, agnostic=agnostic_nms
+    )
     t3 = time_synchronized()
 
-    names = model.module.names if hasattr(model, 'module') else model.names
+    names = model.module.names if hasattr(model, "module") else model.names
     det = pred[0]
     det[:, :4] = scale_coords(img.shape[2:], det[:, :4], img0.shape).round()
     t4 = time_synchronized()
 
-    return DetectResults(augment=augment, detect_time=t2-t1, time=t4-t1,
-            imgs=[image], files=["noname"], names=names, xyxy=[reversed(det)])
+    return DetectResults(
+        augment=augment,
+        detect_time=t2 - t1,
+        time=t4 - t1,
+        imgs=[image],
+        files=["noname"],
+        names=names,
+        xyxy=[reversed(det)],
+    )
 
-def get_meta(results:DetectResults):
+
+def get_meta(results: DetectResults):
     """Extracts relevant information from the results of the detection
     and generates a Python dictionary with it.
 
@@ -95,18 +119,21 @@ def get_meta(results:DetectResults):
         dic = {
             "bounding_box": [int(x) for x in xyxy],
             "confidence": conf.item(),
-            "label": label
+            "label": label,
         }
         meta["results"].append(dic)
         res.append(label)
     meta["_summary"] = dict(Counter(res))
     return meta
 
+
 def plot_one_box(x, img, color=None, label=None, line_thickness=None):
     """Adds one bounding box with optional label to the image"""
 
     # Plots one bounding box on image img
-    tl = line_thickness or round(0.002 * (img.shape[0] + img.shape[1]) / 2) + 1  # line/font thickness
+    tl = (
+        line_thickness or round(0.002 * (img.shape[0] + img.shape[1]) / 2) + 1
+    )  # line/font thickness
     color = color or [random.randint(0, 255) for _ in range(3)]
     c1, c2 = (int(x[0]), int(x[1])), (int(x[2]), int(x[3]))
     cv2.rectangle(img, c1, c2, color, thickness=tl, lineType=cv2.LINE_AA)
@@ -115,17 +142,27 @@ def plot_one_box(x, img, color=None, label=None, line_thickness=None):
         t_size = cv2.getTextSize(label, 0, fontScale=tl / 3, thickness=tf)[0]
         c2 = c1[0] + t_size[0], c1[1] - t_size[1] - 3
         cv2.rectangle(img, c1, c2, color, -1, cv2.LINE_AA)  # filled
-        cv2.putText(img, label, (c1[0], c1[1] - 2), 0, tl / 3, [225, 255, 255], thickness=tf, lineType=cv2.LINE_AA)
+        cv2.putText(
+            img,
+            label,
+            (c1[0], c1[1] - 2),
+            0,
+            tl / 3,
+            [225, 255, 255],
+            thickness=tf,
+            lineType=cv2.LINE_AA,
+        )
+
 
 def label_image(p, results):
-    """Takes the results of the detection and draws several bounding boxes 
+    """Takes the results of the detection and draws several bounding boxes
     with labels on the image.
 
-    p: 
+    p:
         relative path and filename of the source image
-    results: 
+    results:
         the object returned by detect
-    save_dir: 
+    save_dir:
         name of the folder to save the labelled image
     """
 
@@ -150,12 +187,14 @@ def label_image(p, results):
     else:
         return bytearray([])
 
+
 if __name__ == "__main__":
     import sys
+
     if len(sys.argv) == 1:
         print("Usage:")
         print(f"{sys.argv[0]} filename")
-        quit()    
+        quit()
     path = sys.argv[1]
     # Load the model
     model = load_model()
